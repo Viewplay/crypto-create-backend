@@ -4,6 +4,8 @@ import { CORS_ORIGIN, PORT } from "./config";
 import orderRouter from "./routes/order";
 import uploadRouter from "./routes/upload";
 import executeRouter from "./routes/execute";
+import checkoutRouter from "./routes/checkout";
+import statusRouter from "./routes/status";
 
 const app = express();
 
@@ -21,6 +23,10 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.use("/v1/solana/order", orderRouter);
 app.use("/v1/solana/upload-image", uploadRouter);
 app.use("/v1/solana/execute", executeRouter);
+
+// New: payment page flow
+app.use("/v1/solana/checkout", checkoutRouter);
+app.use("/v1/solana/status", statusRouter);
 
 app.listen(PORT, () => {
   // eslint-disable-next-line no-console
