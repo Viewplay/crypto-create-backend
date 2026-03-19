@@ -31,7 +31,7 @@ export type Order = {
   buyer: string;
   createdAt: number;
   expiresAt: number;
-  expectedLamports: number;
+  expectedLamports: number; // UNIQUE per order (base + nonce)
   options: z.infer<typeof RevokeOptionsSchema>;
   recipient: string; // assigned receiving address (base58)
 };
@@ -52,7 +52,17 @@ const pool: PoolItem[] = RECEIVER_POOL.map((pk) => ({
 
 const ORDER_TTL_MS = RESERVATION_TTL_MINUTES * 60 * 1000;
 
-function computeExpectedLamports(options: z.infer<typeof RevokeOptionsSchema>): number {
+/**
+ * We add a tiny nonce (1..900 lamports) so each order amount is unique,
+ * preventing false "paid" matches from old transfers on the same recipient.
+ */
+let nonceCounter = 0;
+function addUniqueNonce(baseLamports: number): number {
+  nonceCounter = (nonceCounter + 1) % 900; // 0..899
+  return baseLamports + (nonceCounter + 1); // +1..+900 lamports
+}
+
+function computeBaseLamports(options: z.infer<typeof RevokeOptionsSchema>): number {
   const addons =
     (options.revokeFreeze ? 1 : 0) +
     (options.revokeMint ? 1 : 0) +
@@ -135,7 +145,6 @@ router.post("/", (req, res) => {
 
   const buyerStr = parsed.data.buyer;
   try {
-    // Validate base58 pubkey
     // eslint-disable-next-line no-new
     new PublicKey(buyerStr);
   } catch {
@@ -143,9 +152,7 @@ router.post("/", (req, res) => {
   }
 
   const options = parsed.data.options;
-  const expectedLamports = computeExpectedLamports(options);
-
-  const orderId = uuid();
+const orderId = uuid();
   const recipient = acquireRecipient(orderId);
 
   if (!recipient) {
@@ -157,6 +164,9 @@ router.post("/", (req, res) => {
 
   const createdAt = Date.now();
   const expiresAt = createdAt + ORDER_TTL_MS;
+
+  const baseLamports = computeBaseLamports(options);
+  const expectedLamports = addUniqueNonce(baseLamports);
 
   const order: Order = {
     orderId,

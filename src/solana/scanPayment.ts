@@ -4,11 +4,11 @@ type ScanParams = {
   connection: Connection;
   recipient: PublicKey;
   buyer: PublicKey;
-  expectedLamports: number;
-  lookbackLimit?: number; // how many recent txs to inspect
+  expectedLamports: number; // must match EXACT
+  lookbackLimit?: number;
 };
 
-function isTransferToRecipient(ix: any, recipient: PublicKey, expectedLamports: number): boolean {
+function isExactTransferToRecipient(ix: any, recipient: PublicKey, expectedLamports: number): boolean {
   const pid = ix?.programId?.toBase58?.() ?? ix?.programId?.toString?.() ?? "";
   if (pid !== SystemProgram.programId.toBase58()) return false;
 
@@ -19,7 +19,7 @@ function isTransferToRecipient(ix: any, recipient: PublicKey, expectedLamports: 
   const dest = info?.destination;
   const lamports = Number(info?.lamports ?? 0);
 
-  return dest === recipient.toBase58() && lamports >= expectedLamports;
+  return dest === recipient.toBase58() && lamports === expectedLamports;
 }
 
 export async function findPaymentSignature(params: ScanParams): Promise<string | null> {
@@ -44,7 +44,7 @@ export async function findPaymentSignature(params: ScanParams): Promise<string |
     if (!signerKeys.includes(buyer.toBase58())) continue;
 
     const instructions = tx.transaction.message.instructions as any[];
-    const ok = instructions.some((ix) => isTransferToRecipient(ix, recipient, expectedLamports));
+    const ok = instructions.some((ix) => isExactTransferToRecipient(ix, recipient, expectedLamports));
     if (!ok) continue;
 
     return sig;
