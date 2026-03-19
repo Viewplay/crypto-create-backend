@@ -56,7 +56,7 @@ export const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "*";
 
 // Pricing
 export const BASE_PRICE_SOL = 0.08;
-export const ADDON_PRICE_SOL = 0.1;
+export const ADDON_PRICE_SOL = 0.07;
 
 export const UPDATE_AUTHORITY_BURN = new PublicKey(
   process.env.UPDATE_AUTHORITY_BURN ?? "11111111111111111111111111111111"
