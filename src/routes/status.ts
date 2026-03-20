@@ -1,9 +1,10 @@
+// File: src/routes/status.ts
 import express from "express";
 import { z } from "zod";
 import { PublicKey } from "@solana/web3.js";
 import { connection } from "../config";
-import { getOrder, deleteOrder } from "./order";
 import { findPaymentSignature } from "../solana/scanPayment";
+import { getCheckoutOrder, deleteCheckoutOrder } from "./checkout";
 
 const router = express.Router();
 
@@ -17,12 +18,12 @@ router.get("/:orderId", async (req, res) => {
 
   const { orderId } = parsed.data;
 
-  const order = getOrder(orderId);
+  const order = getCheckoutOrder(orderId);
   if (!order) return res.json({ status: "expired" });
 
   const now = Date.now();
   if (order.expiresAt <= now) {
-    deleteOrder(orderId);
+    deleteCheckoutOrder(orderId);
     return res.json({ status: "expired" });
   }
 

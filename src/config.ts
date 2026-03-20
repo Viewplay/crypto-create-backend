@@ -8,31 +8,30 @@ function mustGetEnv(name: string): string {
   return v;
 }
 
-function parsePublicKeysCsv(csv: string): PublicKey[] {
-  return csv
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s) => new PublicKey(s));
-}
-
 export const SOLANA_RPC_URL = mustGetEnv("SOLANA_RPC_URL");
 export const connection = new Connection(SOLANA_RPC_URL, "confirmed");
 
-// ===== Receiving wallets (POOL) =====
-// Preferred: RECEIVER_POOL=addr1,addr2,addr3...
-// Fallback: RECEIVER_WALLET=single_address
-export const RECEIVER_POOL: PublicKey[] = (() => {
-  const pool = (process.env.RECEIVER_POOL ?? "").trim();
-  if (pool) return parsePublicKeysCsv(pool);
+/**
+ * This is YOUR main wallet (treasury).
+ * Funds will be swept here from the unique per-order receiving addresses.
+ */
+export const RECEIVER_WALLET = new PublicKey(mustGetEnv("RECEIVER_WALLET"));
 
-  const single = mustGetEnv("RECEIVER_WALLET");
-  return [new PublicKey(single)];
-})();
+/**
+ * Deterministic unique-address system (Solution C).
+ *
+ * Put a strong secret here (DO NOT share it, DO NOT commit it to Git).
+ * Example: 64+ random chars.
+ *
+ * On Render: Environment -> add RECIPIENT_MASTER_SECRET
+ */
+export const RECIPIENT_MASTER_SECRET = mustGetEnv("RECIPIENT_MASTER_SECRET");
 
-export const RESERVATION_TTL_MINUTES = Number(process.env.RESERVATION_TTL_MINUTES ?? 30);
-
-// ===== Server signer =====
+/**
+ * Provide ONE of:
+ * - SERVER_KEYPAIR_BASE58 (recommended): base58-encoded secretKey bytes
+ * - SERVER_KEYPAIR_JSON: JSON array of secretKey bytes, e.g. [12,34,...]
+ */
 export function loadServerKeypair(): Keypair {
   const b58 = process.env.SERVER_KEYPAIR_BASE58;
   if (b58) {
@@ -54,10 +53,16 @@ export const serverKeypair = loadServerKeypair();
 export const PORT = Number(process.env.PORT ?? 3000);
 export const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "*";
 
+export const NFT_STORAGE_TOKEN = process.env.NFT_STORAGE_TOKEN ?? "";
+
 // Pricing
 export const BASE_PRICE_SOL = 0.08;
 export const ADDON_PRICE_SOL = 0.07;
 
+// Reservation TTL (minutes) for payment window
+export const RESERVATION_TTL_MINUTES = Number(process.env.RESERVATION_TTL_MINUTES ?? 30);
+
+// Metaplex “burn-like” address for making updates impossible.
 export const UPDATE_AUTHORITY_BURN = new PublicKey(
   process.env.UPDATE_AUTHORITY_BURN ?? "11111111111111111111111111111111"
 );

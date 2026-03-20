@@ -1,29 +1,18 @@
+// File: src/routes/execute.ts
 import express from "express";
 import { z } from "zod";
-import { LAMPORTS_PER_SOL, PublicKey, SystemProgram } from "@solana/web3.js";
-import {
-  connection,
-  serverKeypair,
-  UPDATE_AUTHORITY_BURN,
-  RECEIVER_POOL,
-  BASE_PRICE_SOL,
-  ADDON_PRICE_SOL,
-} from "../config";
-import { getOrder, deleteOrder } from "./order";
+import { PublicKey } from "@solana/web3.js";
+import { connection, serverKeypair, UPDATE_AUTHORITY_BURN } from "../config";
+import { getCheckoutOrder, deleteCheckoutOrder } from "./checkout";
 import { verifyPaymentTx } from "../solana/verifyPayment";
 import { createTokenWithMetadata } from "../solana/createToken";
+import { deriveRecipientKeypair } from "../solana/deriveRecipient";
+import { sweepToTreasury } from "../solana/sweep";
 
 const router = express.Router();
 
-const RevokeOptionsSchema = z.object({
-  revokeFreeze: z.boolean().default(false),
-  revokeMint: z.boolean().default(false),
-  revokeUpdate: z.boolean().default(false),
-});
-
 const ExecuteSchema = z.object({
-  // orderId optional: if missing/expired, we recover from on-chain tx
-  orderId: z.string().min(8).optional(),
+  orderId: z.string().min(8),
   paymentSignature: z.string().min(20),
 
   token: z.object({
@@ -43,159 +32,82 @@ const ExecuteSchema = z.object({
       .optional()
       .default({}),
   }),
-
-  // Only used in recovery mode; in normal mode options come from the order
-  options: RevokeOptionsSchema.optional().default({
-    revokeFreeze: false,
-    revokeMint: false,
-    revokeUpdate: false,
-  }),
 });
-
-function computeExpectedLamports(options: z.infer<typeof RevokeOptionsSchema>): number {
-  const addons =
-    (options.revokeFreeze ? 1 : 0) +
-    (options.revokeMint ? 1 : 0) +
-    (options.revokeUpdate ? 1 : 0);
-
-  const totalSol = BASE_PRICE_SOL + addons * ADDON_PRICE_SOL;
-  return Math.round(totalSol * LAMPORTS_PER_SOL);
-}
-
-function isInReceiverPool(dest: string): boolean {
-  return RECEIVER_POOL.some((pk) => pk.toBase58() === dest);
-}
-
-async function extractTransferAndSigner(signature: string): Promise<{
-  signer: string;
-  dest: string;
-  lamports: number;
-}> {
-  const tx = await connection.getParsedTransaction(signature, {
-    commitment: "confirmed",
-    maxSupportedTransactionVersion: 0,
-  });
-  if (!tx) throw new Error("Payment transaction not found (not confirmed yet?)");
-
-  const signer = tx.transaction.message.accountKeys
-    .filter((k) => k.signer)
-    .map((k) => k.pubkey.toBase58())[0];
-
-  if (!signer) throw new Error("No signer found in payment tx");
-
-  const instructions = tx.transaction.message.instructions as any[];
-  for (const ix of instructions) {
-    const pid = ix?.programId?.toBase58?.() ?? ix?.programId?.toString?.() ?? "";
-    if (pid !== SystemProgram.programId.toBase58()) continue;
-
-    const parsed = ix?.parsed;
-    if (!parsed || parsed?.type !== "transfer") continue;
-
-    const info = parsed?.info;
-    const dest = info?.destination;
-    const lamports = Number(info?.lamports ?? 0);
-
-    if (dest && lamports > 0) return { signer, dest, lamports };
-  }
-
-  throw new Error("No SOL transfer found in payment tx");
-}
 
 router.post("/", async (req, res) => {
   const parsed = ExecuteSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
-  const { orderId, paymentSignature, token, options } = parsed.data;
+  const { orderId, paymentSignature, token } = parsed.data;
 
   try {
-    // ===== Normal mode: order exists =====
-    const order = orderId ? getOrder(orderId) : undefined;
-    if (order) {
-      const buyerPk = new PublicKey(order.buyer);
-      const recipientPk = new PublicKey(order.recipient);
+    // Load order created by /checkout (in-memory, TTL 30 min)
+    const order = getCheckoutOrder(orderId);
+    if (!order) return res.status(404).json({ error: "Order not found or expired" });
 
-      await verifyPaymentTx({
-        connection,
-        signature: paymentSignature,
-        expectedReceiver: recipientPk,
-        expectedLamports: order.expectedLamports,
-        expectedSigner: buyerPk,
-      });
-
-      const out = await createTokenWithMetadata({
-        connection,
-        feePayer: serverKeypair,
-        buyer: buyerPk,
-        token,
-        options: order.options,
-        updateAuthorityBurn: UPDATE_AUTHORITY_BURN,
-      });
-
-      deleteOrder(orderId!);
-
-      return res.json({
-        mode: "order",
-        orderId,
-        mintAddress: out.mint.toBase58(),
-        metadataUri: out.metadataUri,
-        signatures: out.signatures,
-        explorer: {
-          mint: `https://solscan.io/token/${out.mint.toBase58()}`,
-          txs: out.signatures.map((s) => `https://solscan.io/tx/${s}`),
-        },
-        receiverChecked: order.recipient,
-        pricingCheckedLamports: order.expectedLamports,
-        appliedOptions: order.options,
-      });
+    const now = Date.now();
+    if (order.expiresAt <= now) {
+      deleteCheckoutOrder(orderId);
+      return res.status(404).json({ error: "Order not found or expired" });
     }
 
-    // ===== Recovery mode: order missing/expired/restarted =====
-    const info = await extractTransferAndSigner(paymentSignature);
+    // Derive the unique recipient keypair for THIS order
+    const recipientKp = deriveRecipientKeypair(orderId);
+    const recipientPk = recipientKp.publicKey;
 
-    if (!isInReceiverPool(info.dest)) {
-      return res.status(400).json({ error: "Payment destination not in RECEIVER_POOL" });
+    // Safety check (should always match)
+    if (recipientPk.toBase58() !== order.recipient) {
+      return res.status(500).json({ error: "Recipient derivation mismatch" });
     }
 
-    const expectedLamports = computeExpectedLamports(options);
+    const buyerPk = new PublicKey(order.buyer);
 
-    // Strict pricing check: must match what options claim
-    if (info.lamports < expectedLamports) {
-      return res.status(400).json({ error: "Payment amount too low for selected options" });
-    }
-
-    const buyerPk = new PublicKey(info.signer);
-    const recipientPk = new PublicKey(info.dest);
-
+    // Verify payment: buyer signed, transfer sent to derived recipient, exact lamports match
     await verifyPaymentTx({
       connection,
       signature: paymentSignature,
       expectedReceiver: recipientPk,
-      expectedLamports,
+      expectedLamports: order.expectedLamports,
       expectedSigner: buyerPk,
     });
 
+    // Sweep SOL from derived recipient wallet to your main treasury wallet
+    const sweep = await sweepToTreasury({
+      connection,
+      from: recipientKp,
+    });
+
+    // Create token + metadata + apply options
     const out = await createTokenWithMetadata({
       connection,
       feePayer: serverKeypair,
       buyer: buyerPk,
       token,
-      options,
+      options: order.options,
       updateAuthorityBurn: UPDATE_AUTHORITY_BURN,
     });
 
+    // Cleanup
+    deleteCheckoutOrder(orderId);
+
     return res.json({
-      mode: "recovery",
+      mode: "order",
+      orderId,
       mintAddress: out.mint.toBase58(),
       metadataUri: out.metadataUri,
       signatures: out.signatures,
       explorer: {
         mint: `https://solscan.io/token/${out.mint.toBase58()}`,
         txs: out.signatures.map((s) => `https://solscan.io/tx/${s}`),
+        metadataUri: out.metadataUri,
       },
-      receiverChecked: info.dest,
-      pricingCheckedLamports: expectedLamports,
-      appliedOptions: options,
-      recoveredBuyer: info.signer,
+      receiverChecked: order.recipient,
+      pricingCheckedLamports: order.expectedLamports,
+      appliedOptions: order.options,
+      sweep: {
+        sweptLamports: sweep.sweptLamports,
+        signature: sweep.signature ?? null,
+      },
     });
   } catch (e: any) {
     return res.status(500).json({ error: e?.message ?? "Execute failed" });
