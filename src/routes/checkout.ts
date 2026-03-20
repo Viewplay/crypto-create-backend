@@ -62,6 +62,42 @@ export function deleteCheckoutOrder(orderId: string): void {
   orders.delete(orderId);
 }
 
+/**
+ * Rescue endpoint:
+ * Find an in-memory order by recipient address.
+ * Only works while the order is still alive (TTL) and the service hasn't restarted.
+ */
+router.get("/find-order", (req, res) => {
+  cleanupExpiredOrders();
+
+  const recipient = String(req.query.recipient || "").trim();
+  if (!recipient) return res.status(400).json({ error: "Missing recipient query param" });
+
+  try {
+    // Validate pubkey format
+    // eslint-disable-next-line no-new
+    new PublicKey(recipient);
+  } catch {
+    return res.status(400).json({ error: "Invalid recipient public key" });
+  }
+
+  for (const o of orders.values()) {
+    if (o.recipient === recipient) {
+      return res.json({
+        found: true,
+        orderId: o.orderId,
+        buyer: o.buyer,
+        recipient: o.recipient,
+        expectedLamports: o.expectedLamports,
+        expiresAt: o.expiresAt,
+        options: o.options,
+      });
+    }
+  }
+
+  return res.status(404).json({ found: false, error: "Order not found (expired or service restarted)" });
+});
+
 router.post("/", (req, res) => {
   cleanupExpiredOrders();
 
