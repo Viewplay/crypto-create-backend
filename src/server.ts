@@ -1,6 +1,6 @@
 ﻿import express from "express";
 import cors from "cors";
-import { CORS_ORIGIN, PORT } from "./config";
+import { CORS_ORIGIN, PORT, serverKeypair } from "./config";
 import orderRouter from "./routes/order";
 import uploadRouter from "./routes/upload";
 import executeRouter from "./routes/execute";
@@ -20,11 +20,14 @@ app.use(express.json({ limit: "2mb" }));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
+// Debug: show server fee-payer public key (to top up SOL for rent/fees)
+app.get("/v1/solana/server-public", (_req, res) =>
+  res.json({ serverFeePayer: serverKeypair.publicKey.toBase58() })
+);
+
 app.use("/v1/solana/order", orderRouter);
 app.use("/v1/solana/upload-image", uploadRouter);
 app.use("/v1/solana/execute", executeRouter);
-
-// New: payment page flow
 app.use("/v1/solana/checkout", checkoutRouter);
 app.use("/v1/solana/status", statusRouter);
 
