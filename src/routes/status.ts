@@ -31,9 +31,8 @@ router.get("/:orderId", async (req, res) => {
     const sig = await findPaymentSignature({
       connection,
       recipient: new PublicKey(order.recipient),
-      buyer: new PublicKey(order.buyer),
       expectedLamports: order.expectedLamports,
-      lookbackLimit: 30,
+      lookbackLimit: 15,
     });
 
     if (sig) {
