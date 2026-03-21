@@ -41,7 +41,6 @@ router.post("/", async (req, res) => {
   const { orderId, paymentSignature, token } = parsed.data;
 
   try {
-    // Load order created by /checkout (in-memory, TTL 30 min)
     const order = getCheckoutOrder(orderId);
     if (!order) return res.status(404).json({ error: "Order not found or expired" });
 
@@ -51,33 +50,31 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ error: "Order not found or expired" });
     }
 
-    // Derive the unique recipient keypair for THIS order
     const recipientKp = deriveRecipientKeypair(orderId);
     const recipientPk = recipientKp.publicKey;
 
-    // Safety check (should always match)
     if (recipientPk.toBase58() !== order.recipient) {
       return res.status(500).json({ error: "Recipient derivation mismatch" });
     }
 
+    // buyer = receiver address where tokens will be minted
     const buyerPk = new PublicKey(order.buyer);
 
-    // Verify payment: buyer signed, transfer sent to derived recipient, exact lamports match
+    // Verify payment: transfer to derived recipient + exact lamports
+    // (NO signer constraint — client can pay from any wallet)
     await verifyPaymentTx({
       connection,
       signature: paymentSignature,
       expectedReceiver: recipientPk,
       expectedLamports: order.expectedLamports,
-      expectedSigner: buyerPk,
     });
 
-    // Sweep SOL from derived recipient wallet to your main treasury wallet
+    // Sweep SOL from derived recipient wallet to your treasury
     const sweep = await sweepToTreasury({
       connection,
       from: recipientKp,
     });
 
-    // Create token + metadata + apply options
     const out = await createTokenWithMetadata({
       connection,
       feePayer: serverKeypair,
@@ -87,7 +84,6 @@ router.post("/", async (req, res) => {
       updateAuthorityBurn: UPDATE_AUTHORITY_BURN,
     });
 
-    // Cleanup
     deleteCheckoutOrder(orderId);
 
     return res.json({
